@@ -1,13 +1,28 @@
 const express = require("express");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
 const dotenv = require("dotenv");
 dotenv.config();
 
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 5000;
+const uri = process.env.DB_URI;
+
+// Database connection
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+});
+
 // middleware setup for authentication
 const { jwtVerify, createRemoteJWKSet } = require("jose-cjs");
-
-const JWKS_URL = `${process.env.NEXTJS_AUTH_JWKS_URL}/api/auth/jwks`;
+const JWKS_URL = `${process.env.NEXTJS_AUTH_JWKS_URL}`;
 const JWKS = createRemoteJWKSet(new URL(JWKS_URL));
 
 const authenticateToken = async (req, res, next) => {
@@ -21,41 +36,88 @@ const authenticateToken = async (req, res, next) => {
         .json({ success: false, message: "Access Token missing." });
     }
 
-    const { payload } = await jwtVerify(token, JWKS, { algorithms: ["RS256"] });
+    // 1. Decrypt the token to identify the user
+    const { payload } = await jwtVerify(token, JWKS);
 
-    // Attach everything to req.user (id, email, role)
-    req.user = payload;
+    // Better-Auth uses the 'id' field as a string identifier
+    const userId = payload.id || payload.sub;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User identifier missing from token.",
+      });
+    }
+    const db = client.db("routemate");
+    const dbUser = await db
+      .collection("user")
+      .findOne({ _id: new ObjectId(userId) });
+
+    if (!dbUser) {
+      try {
+        const dbUserObj = await db
+          .collection("user")
+          .findOne({ _id: new ObjectId(userId) });
+        if (dbUserObj) {
+          req.user = {
+            id: dbUserObj._id.toString(),
+            name: dbUserObj.name,
+            email: dbUserObj.email,
+            role: dbUserObj.role || "user",
+          };
+          return next();
+        }
+      } catch (e) {}
+
+      return res.status(404).json({
+        success: false,
+        message: "User profile not found in database.",
+      });
+    }
+    req.user = {
+      id: dbUser._id.toString(),
+      name: dbUser.name,
+      email: dbUser.email,
+      role: dbUser.role || "user",
+    };
     next();
   } catch (error) {
+    console.error("Authentication Error:", error.message);
     return res
       .status(403)
       .json({ success: false, message: "Token is invalid." });
   }
 };
-///////////////////////////////////
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+/////////////////////////////////
 
-const PORT = `${process.env.PORT}`;
-const uri = process.env.DB_URI;
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
 async function run() {
   try {
     await client.connect();
     const db = client.db("routemate");
 
-    
+    // Middleware to pass db context down dynamically
+    app.use((req, res, next) => {
+      req.db = db;
+      next();
+    });
 
-  } finally {
+    app.get("/vendor", authenticateToken, async (req, res) => {
+      // FIX applied: req.user.role check safely executed
+      if (!req.user || req.user.role !== "vendor") {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied. Admin role required.",
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Access granted. Welcome, King Admin.",
+      });
+    });
+  } catch (error) {
+    console.error("Database initialization crash:", error);
   }
 }
 run().catch(console.dir);
