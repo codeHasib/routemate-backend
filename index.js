@@ -53,10 +53,8 @@ async function run() {
     await client.connect();
     const db = client.db("routemate");
 
-    app.get("/test", authenticateToken, (req, res) => {
-      res.send("Hello hi");
-    });
     
+
   } finally {
   }
 }
