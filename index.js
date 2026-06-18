@@ -109,6 +109,7 @@ async function run() {
     });
     // Public route without middleware
     app.use("/api/public/tickets", publicTicketRoutes);
+
     // Protected routes with authentication
     app.use("/api/manage/tickets", authenticateToken, vendorTicketRoutes);
     app.use("/api/bookings", authenticateToken, bookingRoutes);

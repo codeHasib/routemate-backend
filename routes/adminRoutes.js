@@ -5,12 +5,10 @@ const router = express.Router();
 // Helper rule: Protect the route entirely at route container root mount
 router.use((req, res, next) => {
   if (req.user.role !== "admin") {
-    return res
-      .status(403)
-      .json({
-        success: false,
-        message: "Access Forbidden. Master Admin authorization required.",
-      });
+    return res.status(403).json({
+      success: false,
+      message: "Access Forbidden. Master Admin authorization required.",
+    });
   }
   next();
 });
@@ -20,12 +18,10 @@ router.put("/manage-role", async (req, res) => {
   try {
     const { targetUserId, newRole } = req.body; // targetUserId is string identifier from Better-Auth
     if (!["user", "vendor", "admin"].includes(newRole)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Target profile designation rule invalid.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Target profile designation rule invalid.",
+      });
     }
 
     const result = await req.db
@@ -40,12 +36,10 @@ router.put("/manage-role", async (req, res) => {
         .status(404)
         .json({ success: false, message: "Target user account not found." });
 
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: `Account access level successfully migrated to: ${newRole}`,
-      });
+    res.status(200).json({
+      success: true,
+      message: `Account access level successfully migrated to: ${newRole}`,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -76,12 +70,43 @@ router.put("/mistrust-operator", async (req, res) => {
         { $set: { status: "pending", isFeatured: false } },
       );
 
+    res.status(200).json({
+      success: true,
+      message:
+        "Operator mistrusted. Role stripped and associated assets quarantined safely.",
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
+ * PUT /api/admin/tickets/:id/review
+ * Purpose: Allows Admin to approve/reject a vendor ticket and flag it for the homepage.
+ */
+router.put("/tickets/:id/review", async (req, res) => {
+  try {
+    const { status, isFeatured } = req.body; // status: "active" | "rejected", isFeatured: true | false
+    const updateFields = {};
+
+    if (status) updateFields.status = status;
+    if (typeof isFeatured === "boolean") updateFields.isFeatured = isFeatured;
+
+    const result = await req.db
+      .collection("tickets")
+      .updateOne({ _id: new ObjectId(req.params.id) }, { $set: updateFields });
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Ticket record not found." });
+    }
+
     res
       .status(200)
       .json({
         success: true,
-        message:
-          "Operator mistrusted. Role stripped and associated assets quarantined safely.",
+        message: "Ticket status and feature ranking updated.",
       });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
