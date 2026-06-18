@@ -42,12 +42,10 @@ router.post("/", async (req, res) => {
     } = req.body;
 
     if (!ticketId || !selectedSeats || !Array.isArray(selectedSeats)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Missing required booking metrics parameters.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Missing required booking metrics parameters.",
+      });
     }
 
     const db = req.db || client.db("routemate");
