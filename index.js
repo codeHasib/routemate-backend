@@ -11,7 +11,8 @@ app.use(express.json());
 const PORT = process.env.PORT || 5000;
 const uri = process.env.DB_URI;
 
-// Database connection
+// 1. Database connection setup
+// (The MongoDB driver natively handles lazy connection pooling on-demand)
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -19,11 +20,22 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
+const db = client.db("routemate");
 
-// middleware setup for authentication
+// Middleware to inject the live DB context into requests
+app.use((req, res, next) => {
+  req.db = db;
+  next();
+});
+
+// 2. Middleware setup for authentication
 const { jwtVerify, createRemoteJWKSet } = require("jose-cjs");
 const JWKS_URL = `${process.env.NEXTJS_AUTH_JWKS_URL}`;
-const JWKS = createRemoteJWKSet(new URL(JWKS_URL));
+let JWKS;
+
+if (JWKS_URL && JWKS_URL !== "undefined") {
+  JWKS = createRemoteJWKSet(new URL(JWKS_URL));
+}
 
 const authenticateToken = async (req, res, next) => {
   try {
@@ -36,44 +48,36 @@ const authenticateToken = async (req, res, next) => {
         .json({ success: false, message: "Access Token missing." });
     }
 
-    // 1. Decrypt the token to identify the user
-    const { payload } = await jwtVerify(token, JWKS);
+    if (!JWKS) {
+      JWKS = createRemoteJWKSet(new URL(process.env.NEXTJS_AUTH_JWKS_URL));
+    }
 
-    // Better-Auth uses the 'id' field as a string identifier
+    const { payload } = await jwtVerify(token, JWKS);
     const userId = payload.id || payload.sub;
 
     if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "User identifier missing from token.",
-      });
+      return res
+        .status(401)
+        .json({
+          success: false,
+          message: "User identifier missing from token.",
+        });
     }
-    const db = client.db("routemate");
-    const dbUser = await db
+
+    const currentDb = req.db;
+    const dbUser = await currentDb
       .collection("user")
       .findOne({ _id: new ObjectId(userId) });
 
     if (!dbUser) {
-      try {
-        const dbUserObj = await db
-          .collection("user")
-          .findOne({ _id: new ObjectId(userId) });
-        if (dbUserObj) {
-          req.user = {
-            id: dbUserObj._id.toString(),
-            name: dbUserObj.name,
-            email: dbUserObj.email,
-            role: dbUserObj.role || "user",
-          };
-          return next();
-        }
-      } catch (e) {}
-
-      return res.status(404).json({
-        success: false,
-        message: "User profile not found in database.",
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          message: "User profile not found in database.",
+        });
     }
+
     req.user = {
       id: dbUser._id.toString(),
       name: dbUser.name,
@@ -89,40 +93,35 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-/////////////////////////////////
+// 3. Import routes synchronously
+const publicTicketRoutes = require("./routes/publicTicketRoutes");
+const vendorTicketRoutes = require("./routes/vendorTicketRoutes");
+const bookingRoutes = require("./routes/bookingRoutes");
+const transactionRoutes = require("./routes/transactionRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const vendorRevenue = require("./routes/vendorRevenue");
 
-async function run() {
-  try {
-    // importing routes
-    const publicTicketRoutes = require("./routes/publicTicketRoutes");
-    const vendorTicketRoutes = require("./routes/vendorTicketRoutes");
-    const bookingRoutes = require("./routes/bookingRoutes");
-    const transactionRoutes = require("./routes/transactionRoutes");
-    const adminRoutes = require("./routes/adminRoutes");
-    const vendorRevenue = require("./routes/vendorRevenue");
+// 4. Register Routes (Must be synchronous for Vercel to map them immediately)
+app.use("/api/public/tickets", publicTicketRoutes);
+app.use("/api/vendor", authenticateToken, vendorRevenue);
+app.use("/api/manage/tickets", authenticateToken, vendorTicketRoutes);
+app.use("/api/bookings", authenticateToken, bookingRoutes);
+app.use("/api/transactions", authenticateToken, transactionRoutes);
+app.use("/api/admin", authenticateToken, adminRoutes);
 
-    await client.connect();
-    const db = client.db("routemate");
-
-    app.use((req, res, next) => {
-      req.db = db;
-      next();
-    });
-    // Public route without middleware
-    app.use("/api/public/tickets", publicTicketRoutes);
-
-    // Protected routes with authentication
-    app.use("/api/vendor", authenticateToken, vendorRevenue);
-    app.use("/api/manage/tickets", authenticateToken, vendorTicketRoutes);
-    app.use("/api/bookings", authenticateToken, bookingRoutes);
-    app.use("/api/transactions", authenticateToken, transactionRoutes);
-    app.use("/api/admin", authenticateToken, adminRoutes);
-  } catch (error) {
-    console.error("Database initialization crash:", error);
-  }
-}
-run().catch(console.dir);
-
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// Optional: Base landing endpoint to verify deployment success
+app.get("/", (req, res) => {
+  res.json({ message: "RouteMate API Engine is online." });
 });
+
+// 5. Fire up local listener ONLY if not running inside production serverless environments
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`Server is running locally on port ${PORT}`);
+  });
+}
+
+// ==========================================================================
+// CRITICAL FOR VERCEL DEPLOYMENT: Export the app instance
+// ==========================================================================
+module.exports = app;
