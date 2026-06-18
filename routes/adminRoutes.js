@@ -101,6 +101,31 @@ router.put("/mistrust-operator", async (req, res) => {
   }
 });
 
+// 3. Get the tickets
+router.get("/tickets", async (req, res) => {
+  try {
+    const db = req.db || client.db("routemate");
+
+    // Fetch all tickets, sorted newest first
+    const allTickets = await db
+      .collection("tickets")
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      tickets: allTickets,
+    });
+  } catch (error) {
+    console.error("Failed to read tickets collection:", error.message);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while fetching tickets.",
+    });
+  }
+});
+
 /**
  * PUT /api/admin/tickets/:id/review
  * Purpose: Allows Admin to approve/reject a vendor ticket and flag it for the homepage.
