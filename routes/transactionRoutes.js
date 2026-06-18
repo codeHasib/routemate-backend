@@ -16,6 +16,7 @@ router.get("/history", async (req, res) => {
       .find(query)
       .project({
         ticketId: 1,
+        ticketTitle: 1, // 👈 Add this line to your existing backend route
         selectedSeats: 1,
         totalAmount: 1,
         paymentIntentId: 1,
