@@ -104,25 +104,29 @@ router.post("/", async (req, res) => {
  */
 router.put("/:id/status", async (req, res) => {
   try {
-    const { status } = req.body; // 'accepted', 'paid', 'rejected'
+    // Read paymentIntentId if passed from the payment success script
+    const { status, paymentIntentId } = req.body;
     if (!["pending", "accepted", "paid", "rejected"].includes(status)) {
       return res
         .status(400)
-        .json({
-          success: false,
-          message: "Invalid system status context string.",
-        });
+        .json({ success: false, message: "Invalid status context." });
     }
 
     const bookingId = new ObjectId(req.params.id);
     const db = req.db;
 
-    // A. Find the existing state of this booking first
     const query =
       req.user.role === "admin"
         ? { _id: bookingId }
         : { _id: bookingId, vendorId: req.user.id };
-    const booking = await db.collection("bookings").findOne(query);
+
+    // Support user status updates ONLY if they are marking an accepted booking as paid
+    const userQuery =
+      req.user.role === "user"
+        ? { _id: bookingId, userId: req.user.id }
+        : query;
+
+    const booking = await db.collection("bookings").findOne(userQuery);
 
     if (!booking) {
       return res
@@ -136,26 +140,32 @@ router.put("/:id/status", async (req, res) => {
     const seatCount = booking.selectedSeats.length;
     const ticketId = new ObjectId(booking.ticketId);
 
-    // B. TRANSITION 1: Moving from 'pending' to 'accepted' -> DECREASE SEATS NOW
+    // Dynamic fields to save to the database ledger
+    let updateFields = { status };
+    if (paymentIntentId) {
+      updateFields.paymentIntentId = paymentIntentId;
+    }
+
+    // Condition A: Deduct seats if moving from pending directly to accepted
     if (status === "accepted" && booking.status === "pending") {
-      const ticketUpdate = await db.collection("tickets").findOneAndUpdate(
-        {
-          _id: ticketId,
-          ticketQuantity: { $gte: seatCount }, // Ensure seats didn't sell out since user requested
-        },
-        { $inc: { ticketQuantity: -seatCount } },
-      );
+      const ticketUpdate = await db
+        .collection("tickets")
+        .findOneAndUpdate(
+          { _id: ticketId, ticketQuantity: { $gte: seatCount } },
+          { $inc: { ticketQuantity: -seatCount } },
+        );
 
       if (!ticketUpdate) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Approval failed: Not enough remaining seats left on the vehicle fleet.",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message: "Fleet allocation capacity exhausted.",
+          });
       }
     }
 
-    // C. TRANSITION 2: If cancelling an ALREADY approved/paid booking -> RESTORE SEATS back to pool
+    // Condition B: Return seats if an accepted or paid booking gets canceled/rejected
     if (
       status === "rejected" &&
       (booking.status === "accepted" || booking.status === "paid")
@@ -165,15 +175,14 @@ router.put("/:id/status", async (req, res) => {
         .updateOne({ _id: ticketId }, { $inc: { ticketQuantity: seatCount } });
     }
 
-    // D. Finalize state transition in ledger
-    const result = await db
+    // Finalize state transition in database
+    await db
       .collection("bookings")
-      .updateOne({ _id: bookingId }, { $set: { status } });
+      .updateOne({ _id: bookingId }, { $set: updateFields });
 
-    res.status(200).json({
-      success: true,
-      message: `Booking classification successfully updated to: ${status}`,
-    });
+    res
+      .status(200)
+      .json({ success: true, message: `Status synchronized to: ${status}` });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
