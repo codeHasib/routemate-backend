@@ -1,5 +1,6 @@
 // routes/adminRoutes.js
 const express = require("express");
+const { ObjectId } = require("mongodb");
 const router = express.Router();
 
 // Helper rule: Protect the route entirely at route container root mount
@@ -11,6 +12,26 @@ router.use((req, res, next) => {
     });
   }
   next();
+});
+
+// 0. All users: GET
+router.get("/users", async (req, res) => {
+  try {
+    // Access your database connection
+    const db = req.db || client.db("routemate");
+
+    // Fetch all users from your collection
+    const allUsers = await db.collection("user").find({}).toArray();
+
+    // Send them back in a clean JSON format
+    res.status(200).json({
+      success: true,
+      users: allUsers,
+    });
+  } catch (error) {
+    console.error("Failed to read user collection:", error.message);
+    res.status(500).json({ success: false, message: "Internal server error." });
+  }
 });
 
 // 1. ADMIN: Change any user's system role mapping hierarchy
@@ -27,7 +48,7 @@ router.put("/manage-role", async (req, res) => {
     const result = await req.db
       .collection("user")
       .updateOne(
-        { _id: targetUserId },
+        { _id: new ObjectId(targetUserId) },
         { $set: { role: newRole, updatedAt: new Date() } },
       );
 
@@ -102,12 +123,10 @@ router.put("/tickets/:id/review", async (req, res) => {
         .json({ success: false, message: "Ticket record not found." });
     }
 
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "Ticket status and feature ranking updated.",
-      });
+    res.status(200).json({
+      success: true,
+      message: "Ticket status and feature ranking updated.",
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
