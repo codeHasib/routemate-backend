@@ -9,14 +9,40 @@ const router = express.Router();
  */
 router.get("/", async (req, res) => {
   try {
-    // Regular users must never see "pending" or "rejected" tickets
-    const tickets = await req.db
+    const { search, type, sort, page = 1, limit = 9 } = req.query;
+    let query = { status: "active" };
+
+    if (search) {
+      query.$or = [
+        { fromLocation: { $regex: search, $options: "i" } },
+        { toLocation: { $regex: search, $options: "i" } },
+      ];
+    }
+    if (type) query.transportType = { $regex: new RegExp(`^${type}$`, "i") };
+
+    // Sorting
+    let sortObj = {};
+    if (sort === "price-low") sortObj = { price: 1 };
+    else if (sort === "price-high") sortObj = { price: -1 };
+
+    // Pagination Logic
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const cursor = req.db
       .collection("tickets")
-      .find({ status: "active" })
-      .toArray();
-    res
-      .status(200)
-      .json({ success: true, count: tickets.length, data: tickets });
+      .find(query)
+      .sort(sortObj)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const tickets = await cursor.toArray();
+    const total = await req.db.collection("tickets").countDocuments(query); // Needed for pagination UI
+
+    res.status(200).json({
+      success: true,
+      data: tickets,
+      totalPages: Math.ceil(total / limit),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -33,13 +59,11 @@ router.get("/featured", async (req, res) => {
       .find({ status: "active", isFeatured: true })
       .limit(8)
       .toArray();
-    res
-      .status(200)
-      .json({
-        success: true,
-        count: featuredTickets.length,
-        data: featuredTickets,
-      });
+    res.status(200).json({
+      success: true,
+      count: featuredTickets.length,
+      data: featuredTickets,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

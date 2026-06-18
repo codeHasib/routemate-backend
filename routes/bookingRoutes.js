@@ -1,22 +1,22 @@
-// routes/bookingRoutes.js
 const express = require("express");
 const { ObjectId } = require("mongodb");
 const router = express.Router();
 
 /**
  * 1. COMMON GET: Fetch relevant bookings dynamically based on user role context
- * URL: GET /api/bookings
+ * (Kept exactly the same as your working version)
  */
 router.get("/", async (req, res) => {
   try {
     let query = {};
-    if (req.user.role === "vendor") {
-      query = { vendorId: req.user.id }; // Vendor sees bookings for their own fleet/tickets
-    } else if (req.user.role === "user") {
-      query = { userId: req.user.id }; // Regular travelers see only their personal tickets
-    } // Admins bypass constraints and can fetch all system bookings
+    const db = req.db;
 
-    const db = req.db || client.db("routemate");
+    if (req.user.role === "vendor") {
+      query = { vendorId: req.user.id };
+    } else if (req.user.role === "user") {
+      query = { userId: req.user.id };
+    }
+
     const bookings = await db.collection("bookings").find(query).toArray();
     res.status(200).json({ success: true, data: bookings });
   } catch (error) {
@@ -25,9 +25,9 @@ router.get("/", async (req, res) => {
 });
 
 /**
- * 2. USER: Initialize a fresh reservation booking layout with Atomic Seat Locking
+ * 2. USER: Initialize a fresh reservation booking layout
  * URL: POST /api/bookings
- * Expects in req.body: ticketId, vendorId, selectedSeats, totalAmount, ticketTitle, userName, userEmail
+ * FIX: Only checks availability; does NOT decrease inventory yet.
  */
 router.post("/", async (req, res) => {
   try {
@@ -39,45 +39,35 @@ router.post("/", async (req, res) => {
       ticketTitle,
       userName,
       userEmail,
+      from,
+      to,
+      departureTime,
+      ticketImage,
     } = req.body;
 
-    if (!ticketId || !selectedSeats || !Array.isArray(selectedSeats)) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required booking metrics parameters.",
-      });
-    }
-
-    const db = req.db || client.db("routemate");
+    const db = req.db;
     const ticketObjectId = new ObjectId(ticketId);
+    const requestedQuantity = selectedSeats.length;
 
-    // A. ATOMIC TRANSACTION CHECK: Find the ticket and check if ANY selected seats are already booked
-    const alreadyBookedTicket = await db.collection("tickets").findOne({
-      _id: ticketObjectId,
-      "seats.seatNo": { $in: selectedSeats },
-      "seats.isBooked": true,
-    });
+    // A. Read-only Availability Check
+    const ticket = await db
+      .collection("tickets")
+      .findOne({ _id: ticketObjectId });
 
-    if (alreadyBookedTicket) {
+    if (!ticket) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Ticket manifest not found." });
+    }
+
+    if (ticket.ticketQuantity < requestedQuantity) {
       return res.status(400).json({
         success: false,
-        message:
-          "One or more selected seats have already been reserved by another user.",
+        message: `Booking failed: Only ${ticket.ticketQuantity} seats are left.`,
       });
     }
 
-    // B. LOCK THE SEATS: Atomically flip 'isBooked' to true inside the nested seats array structure
-    if (selectedSeats.length > 0) {
-      await db
-        .collection("tickets")
-        .updateOne(
-          { _id: ticketObjectId, "seats.seatNo": { $in: selectedSeats } },
-          { $set: { "seats.$[elem].isBooked": true } },
-          { arrayFilters: [{ "elem.seatNo": { $in: selectedSeats } }] },
-        );
-    }
-
-    // C. CREATE THE MERGED COMPREHENSIVE LEDGER RECORD
+    // B. Log the ledger record directly as "pending"
     const newBooking = {
       userId: req.user.id,
       userName: userName || req.user.name,
@@ -87,7 +77,11 @@ router.post("/", async (req, res) => {
       vendorId: vendorId,
       selectedSeats: selectedSeats,
       totalAmount: parseFloat(totalAmount) || 0,
-      status: "pending", // Default baseline status flag
+      from: from,
+      to: to,
+      departureTime: departureTime,
+      ticketImage: ticketImage,
+      status: "pending", // Initializes on hold pending vendor validation
       createdAt: new Date(),
     };
 
@@ -96,7 +90,7 @@ router.post("/", async (req, res) => {
     res.status(201).json({
       success: true,
       bookingId: result.insertedId,
-      message: "Seats held and booking processed successfully!",
+      message: "Booking request submitted! Awaiting vendor validation.",
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -104,40 +98,81 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * 3. VENDOR / ADMIN: Shift Booking State (pending, accepted, paid, rejected)
+ * 3. VENDOR / ADMIN: Shift Booking State & Process Seat Inventory Contextually
  * URL: PUT /api/bookings/:id/status
+ * FIX: Handles subtraction on approval and restoration on rejection.
  */
 router.put("/:id/status", async (req, res) => {
   try {
     const { status } = req.body; // 'accepted', 'paid', 'rejected'
     if (!["pending", "accepted", "paid", "rejected"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid system status context string.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Invalid system status context string.",
+        });
     }
 
     const bookingId = new ObjectId(req.params.id);
-    const db = req.db || client.db("routemate");
+    const db = req.db;
 
+    // A. Find the existing state of this booking first
     const query =
       req.user.role === "admin"
         ? { _id: bookingId }
         : { _id: bookingId, vendorId: req.user.id };
+    const booking = await db.collection("bookings").findOne(query);
 
-    const result = await db
-      .collection("bookings")
-      .updateOne(query, { $set: { status } });
-
-    if (result.matchedCount === 0) {
+    if (!booking) {
       return res
         .status(404)
-        .json({ success: false, message: "Booking record unverified." });
+        .json({
+          success: false,
+          message: "Booking record unverified or unauthorized.",
+        });
     }
+
+    const seatCount = booking.selectedSeats.length;
+    const ticketId = new ObjectId(booking.ticketId);
+
+    // B. TRANSITION 1: Moving from 'pending' to 'accepted' -> DECREASE SEATS NOW
+    if (status === "accepted" && booking.status === "pending") {
+      const ticketUpdate = await db.collection("tickets").findOneAndUpdate(
+        {
+          _id: ticketId,
+          ticketQuantity: { $gte: seatCount }, // Ensure seats didn't sell out since user requested
+        },
+        { $inc: { ticketQuantity: -seatCount } },
+      );
+
+      if (!ticketUpdate) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Approval failed: Not enough remaining seats left on the vehicle fleet.",
+        });
+      }
+    }
+
+    // C. TRANSITION 2: If cancelling an ALREADY approved/paid booking -> RESTORE SEATS back to pool
+    if (
+      status === "rejected" &&
+      (booking.status === "accepted" || booking.status === "paid")
+    ) {
+      await db
+        .collection("tickets")
+        .updateOne({ _id: ticketId }, { $inc: { ticketQuantity: seatCount } });
+    }
+
+    // D. Finalize state transition in ledger
+    const result = await db
+      .collection("bookings")
+      .updateOne({ _id: bookingId }, { $set: { status } });
 
     res.status(200).json({
       success: true,
-      message: `Booking classification updated to: ${status}`,
+      message: `Booking classification successfully updated to: ${status}`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

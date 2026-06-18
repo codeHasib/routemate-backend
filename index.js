@@ -99,6 +99,7 @@ async function run() {
     const bookingRoutes = require("./routes/bookingRoutes");
     const transactionRoutes = require("./routes/transactionRoutes");
     const adminRoutes = require("./routes/adminRoutes");
+    const vendorRevenue = require("./routes/vendorRevenue");
 
     await client.connect();
     const db = client.db("routemate");
@@ -111,6 +112,7 @@ async function run() {
     app.use("/api/public/tickets", publicTicketRoutes);
 
     // Protected routes with authentication
+    app.use("/api/vendor", authenticateToken, vendorRevenue);
     app.use("/api/manage/tickets", authenticateToken, vendorTicketRoutes);
     app.use("/api/bookings", authenticateToken, bookingRoutes);
     app.use("/api/transactions", authenticateToken, transactionRoutes);
