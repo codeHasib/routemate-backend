@@ -1,0 +1,91 @@
+// routes/adminRoutes.js
+const express = require("express");
+const router = express.Router();
+
+// Helper rule: Protect the route entirely at route container root mount
+router.use((req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res
+      .status(403)
+      .json({
+        success: false,
+        message: "Access Forbidden. Master Admin authorization required.",
+      });
+  }
+  next();
+});
+
+// 1. ADMIN: Change any user's system role mapping hierarchy
+router.put("/manage-role", async (req, res) => {
+  try {
+    const { targetUserId, newRole } = req.body; // targetUserId is string identifier from Better-Auth
+    if (!["user", "vendor", "admin"].includes(newRole)) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Target profile designation rule invalid.",
+        });
+    }
+
+    const result = await req.db
+      .collection("user")
+      .updateOne(
+        { _id: targetUserId },
+        { $set: { role: newRole, updatedAt: new Date() } },
+      );
+
+    if (result.matchedCount === 0)
+      return res
+        .status(404)
+        .json({ success: false, message: "Target user account not found." });
+
+    res
+      .status(200)
+      .json({
+        success: true,
+        message: `Account access level successfully migrated to: ${newRole}`,
+      });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 2. ADMIN: Dynamic "Mistrust" action (Force demote a vendor/admin instantly back to user)
+router.put("/mistrust-operator", async (req, res) => {
+  try {
+    const { targetUserId } = req.body;
+
+    const result = await req.db
+      .collection("user")
+      .updateOne(
+        { _id: targetUserId },
+        { $set: { role: "user", mistrustedAt: new Date() } },
+      );
+
+    if (result.matchedCount === 0)
+      return res
+        .status(404)
+        .json({ success: false, message: "Target accounts missing." });
+
+    // Optional safety cascade: Quarantine active tickets associated with this demoted operator
+    await req.db
+      .collection("tickets")
+      .updateMany(
+        { vendorId: targetUserId },
+        { $set: { status: "pending", isFeatured: false } },
+      );
+
+    res
+      .status(200)
+      .json({
+        success: true,
+        message:
+          "Operator mistrusted. Role stripped and associated assets quarantined safely.",
+      });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+module.exports = router;
