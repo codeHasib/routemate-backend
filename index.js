@@ -93,17 +93,27 @@ const authenticateToken = async (req, res, next) => {
 
 async function run() {
   try {
+    // importing routes
+    const publicTicketRoutes = require("./routes/publicTicketRoutes");
+    const vendorTicketRoutes = require("./routes/vendorTicketRoutes");
+    const bookingRoutes = require("./routes/bookingRoutes");
+    const transactionRoutes = require("./routes/transactionRoutes");
+    const adminRoutes = require("./routes/adminRoutes");
+
     await client.connect();
     const db = client.db("routemate");
 
-    // Middleware to pass db context down dynamically
     app.use((req, res, next) => {
       req.db = db;
       next();
     });
-
-    
-
+    // Public route without middleware
+    app.use("/api/public/tickets", publicTicketRoutes);
+    // Protected routes with authentication
+    app.use("/api/manage/tickets", authenticateToken, vendorTicketRoutes);
+    app.use("/api/bookings", authenticateToken, bookingRoutes);
+    app.use("/api/transactions", authenticateToken, transactionRoutes);
+    app.use("/api/admin", authenticateToken, adminRoutes);
   } catch (error) {
     console.error("Database initialization crash:", error);
   }
