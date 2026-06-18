@@ -102,20 +102,8 @@ async function run() {
       next();
     });
 
-    app.get("/vendor", authenticateToken, async (req, res) => {
-      // FIX applied: req.user.role check safely executed
-      if (!req.user || req.user.role !== "vendor") {
-        return res.status(403).json({
-          success: false,
-          message: "Access denied. Admin role required.",
-        });
-      }
+    
 
-      res.status(200).json({
-        success: true,
-        message: "Access granted. Welcome, King Admin.",
-      });
-    });
   } catch (error) {
     console.error("Database initialization crash:", error);
   }
