@@ -73,12 +73,10 @@ router.put("/mistrust-operator", async (req, res) => {
 
     // 1. Structural Sanity Check: Ensure the ID is present and valid for MongoDB casting
     if (!targetUserId || !ObjectId.isValid(targetUserId)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Invalid or missing Target User ID format.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or missing Target User ID format.",
+      });
     }
 
     // Convert the incoming string into a true MongoDB ObjectId wrapper
@@ -166,6 +164,49 @@ router.put("/tickets/:id/review", async (req, res) => {
     res.status(200).json({
       success: true,
       message: "Ticket status and feature ranking updated.",
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 4. Admin dashboard stats
+router.get("/dashboard-stats", async (req, res) => {
+  try {
+    // 1. Get total users count (User Ingress)
+    const totalUsers = await req.db.collection("user").countDocuments();
+
+    // 2. Get active leases/tickets count (Active Leases)
+    const activeLeases = await req.db.collection("tickets").countDocuments({
+      status: "active",
+    });
+
+    // 3. Compute Gross Yield (Summing a price/yield field from successful transactions)
+    const yieldData = await req.db
+      .collection("tickets")
+      .aggregate([
+        { $match: { status: "completed" } }, // Adjust matches to your schema rules
+        { $group: { _id: null, total: { $sum: "$price" } } },
+      ])
+      .toArray();
+
+    const grossYield = yieldData.length > 0 ? yieldData[0].total : 0;
+
+    // 4. Calculate a mockup or real system load metric (e.g., active versus total tickets ratio)
+    const totalTickets = await req.db.collection("tickets").countDocuments();
+    const systemLoad =
+      totalTickets > 0
+        ? ((activeLeases / totalTickets) * 100).toFixed(2)
+        : "0.00";
+
+    res.status(200).json({
+      success: true,
+      data: {
+        systemLoad: `${systemLoad}%`,
+        activeLeases: activeLeases.toLocaleString(),
+        userIngress: totalUsers.toLocaleString(),
+        grossYield: `$${grossYield.toLocaleString()}`, // Formats numbers nicely with commas
+      },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
