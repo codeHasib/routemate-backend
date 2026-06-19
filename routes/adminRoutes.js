@@ -71,10 +71,24 @@ router.put("/mistrust-operator", async (req, res) => {
   try {
     const { targetUserId } = req.body;
 
+    // 1. Structural Sanity Check: Ensure the ID is present and valid for MongoDB casting
+    if (!targetUserId || !ObjectId.isValid(targetUserId)) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Invalid or missing Target User ID format.",
+        });
+    }
+
+    // Convert the incoming string into a true MongoDB ObjectId wrapper
+    const targetObjectId = new ObjectId(targetUserId);
+
+    // 2. Execute Demotion
     const result = await req.db
       .collection("user")
       .updateOne(
-        { _id: targetUserId },
+        { _id: targetObjectId },
         { $set: { role: "user", mistrustedAt: new Date() } },
       );
 
@@ -83,11 +97,12 @@ router.put("/mistrust-operator", async (req, res) => {
         .status(404)
         .json({ success: false, message: "Target accounts missing." });
 
-    // Optional safety cascade: Quarantine active tickets associated with this demoted operator
+    // 3. Optional safety cascade: Quarantine active tickets associated with this demoted operator
+    // Using targetObjectId assuming vendorId fields are stored as ObjectIds as well
     await req.db
       .collection("tickets")
       .updateMany(
-        { vendorId: targetUserId },
+        { vendorId: targetObjectId },
         { $set: { status: "pending", isFeatured: false } },
       );
 
